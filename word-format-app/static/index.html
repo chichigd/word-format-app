@@ -1,0 +1,560 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>公文格式整理器</title>
+  <style>
+    :root {
+      --bg: #f5f0e8;
+      --ink: #1d2430;
+      --muted: #6d737c;
+      --panel: rgba(255, 252, 247, 0.94);
+      --line: #d9cdbc;
+      --accent: #9d2f2f;
+      --accent-deep: #661818;
+      --warn: #9a5a00;
+      --shadow: 0 18px 48px rgba(54, 37, 24, 0.12);
+      --radius: 24px;
+    }
+
+    * { box-sizing: border-box; }
+
+    body {
+      margin: 0;
+      color: var(--ink);
+      font-family: "Noto Serif SC", "STSong", "Songti SC", serif;
+      background:
+        radial-gradient(circle at top left, rgba(157, 47, 47, 0.08), transparent 28%),
+        linear-gradient(135deg, #efe7db 0%, #f8f5ef 46%, #ede3d3 100%);
+      min-height: 100vh;
+    }
+
+    .shell {
+      width: min(1160px, calc(100vw - 32px));
+      margin: 40px auto;
+      background: var(--panel);
+      border: 1px solid rgba(125, 101, 76, 0.18);
+      border-radius: var(--radius);
+      box-shadow: var(--shadow);
+      overflow: hidden;
+    }
+
+    .hero {
+      padding: 36px 36px 28px;
+      background:
+        linear-gradient(180deg, rgba(157, 47, 47, 0.08), transparent),
+        repeating-linear-gradient(0deg, transparent, transparent 31px, rgba(125, 101, 76, 0.06) 31px, rgba(125, 101, 76, 0.06) 32px);
+      border-bottom: 1px solid var(--line);
+    }
+
+    .eyebrow {
+      margin: 0 0 12px;
+      font-size: 13px;
+      letter-spacing: 0.24em;
+      color: var(--accent);
+    }
+
+    h1 {
+      margin: 0;
+      font-size: clamp(30px, 5vw, 52px);
+      line-height: 1.08;
+      font-weight: 700;
+    }
+
+    .lead {
+      margin: 14px 0 0;
+      max-width: 840px;
+      color: var(--muted);
+      font-size: 16px;
+      line-height: 1.7;
+    }
+
+    .body {
+      display: grid;
+      grid-template-columns: 1.05fr 0.95fr;
+    }
+
+    .panel {
+      padding: 32px 36px 36px;
+      min-width: 0;
+    }
+
+    .panel + .panel {
+      border-left: 1px solid var(--line);
+      background: rgba(255, 248, 240, 0.7);
+    }
+
+    .section-title {
+      margin: 0 0 18px;
+      font-size: 20px;
+    }
+
+    .dropzone {
+      position: relative;
+      border: 1.5px dashed #b59576;
+      border-radius: 18px;
+      padding: 20px 24px;
+      min-height: 112px;
+      display: flex;
+      align-items: center;
+      background: linear-gradient(180deg, rgba(255,255,255,0.8), rgba(248,240,228,0.8));
+      transition: border-color 180ms ease, transform 180ms ease, background 180ms ease;
+      overflow: hidden;
+    }
+
+    .dropzone.dragover {
+      border-color: var(--accent);
+      transform: translateY(-1px);
+      background: linear-gradient(180deg, rgba(255,249,246,0.96), rgba(252,239,230,0.92));
+    }
+
+    .dropzone input {
+      position: absolute;
+      inset: 0;
+      opacity: 0;
+      cursor: pointer;
+      z-index: 2;
+    }
+
+    .dropzone-copy {
+      position: relative;
+      z-index: 1;
+      pointer-events: none;
+      max-width: 100%;
+    }
+
+    .dropzone strong {
+      display: block;
+      font-size: 22px;
+      line-height: 1.15;
+      margin-bottom: 6px;
+      color: #202734;
+      font-weight: 700;
+    }
+
+    .dropzone span, .hint, .status {
+      color: var(--muted);
+      line-height: 1.7;
+      font-size: 14px;
+    }
+
+    .dropzone span {
+      display: block;
+      max-width: 34rem;
+      color: #5d6673;
+      font-size: 14px;
+    }
+
+    .file-pill, .download-pill {
+      display: none;
+      margin-top: 16px;
+      padding: 14px 18px;
+      border-radius: 18px;
+      border: 1px solid rgba(157, 47, 47, 0.12);
+      background: rgba(157, 47, 47, 0.08);
+      color: var(--accent-deep);
+      font-size: 15px;
+      word-break: break-all;
+    }
+
+    .actions {
+      margin-top: 22px;
+      display: flex;
+      gap: 12px;
+      align-items: center;
+      flex-wrap: wrap;
+    }
+
+    button, .download-btn {
+      border: 0;
+      border-radius: 999px;
+      background: linear-gradient(135deg, var(--accent) 0%, var(--accent-deep) 100%);
+      color: #fff7f2;
+      font: inherit;
+      padding: 12px 20px;
+      cursor: pointer;
+      box-shadow: 0 10px 24px rgba(102, 24, 24, 0.18);
+      text-decoration: none;
+      display: inline-flex;
+      align-items: center;
+    }
+
+    button:disabled {
+      opacity: 0.55;
+      cursor: not-allowed;
+      box-shadow: none;
+    }
+
+    .metrics {
+      display: grid;
+      grid-template-columns: repeat(2, minmax(0, 1fr));
+      gap: 12px;
+      margin-bottom: 18px;
+    }
+
+    .metric {
+      padding: 14px 16px;
+      border: 1px solid rgba(125, 101, 76, 0.2);
+      border-radius: 16px;
+      background: rgba(255,255,255,0.72);
+    }
+
+    .metric strong {
+      display: block;
+      font-size: 24px;
+      line-height: 1.1;
+      margin-bottom: 4px;
+    }
+
+    .metric span {
+      color: var(--muted);
+      font-size: 13px;
+    }
+
+    .report-block {
+      margin-top: 18px;
+    }
+
+    .report-block h3 {
+      margin: 0 0 12px;
+      font-size: 16px;
+    }
+
+    .report-list {
+      margin: 0;
+      padding-left: 20px;
+      line-height: 1.8;
+      color: #424a56;
+    }
+
+    .warning {
+      color: var(--warn);
+    }
+
+    .paragraph-list {
+      display: grid;
+      gap: 12px;
+      max-height: 520px;
+      overflow: auto;
+      padding-right: 4px;
+    }
+
+    .paragraph-card {
+      border: 1px solid rgba(125, 101, 76, 0.18);
+      border-radius: 16px;
+      padding: 14px 16px;
+      background: rgba(255,255,255,0.78);
+    }
+
+    .paragraph-meta {
+      display: flex;
+      gap: 8px;
+      flex-wrap: wrap;
+      margin-bottom: 8px;
+      font-size: 12px;
+      color: var(--muted);
+    }
+
+    .chip {
+      border-radius: 999px;
+      padding: 2px 10px;
+      background: rgba(157, 47, 47, 0.08);
+      color: var(--accent-deep);
+    }
+
+    .paragraph-text {
+      margin: 0 0 10px;
+      line-height: 1.7;
+      word-break: break-word;
+    }
+
+    .sublist {
+      margin: 0;
+      padding-left: 18px;
+      color: #4c5561;
+      line-height: 1.7;
+      font-size: 13px;
+    }
+
+    .empty {
+      padding: 18px;
+      border-radius: 16px;
+      background: rgba(255,255,255,0.66);
+      color: var(--muted);
+      line-height: 1.7;
+    }
+
+    @media (max-width: 920px) {
+      .shell { margin: 18px auto; }
+      .hero, .panel { padding: 24px 20px; }
+      .body { grid-template-columns: 1fr; }
+      .panel + .panel { border-left: 0; border-top: 1px solid var(--line); }
+    }
+  </style>
+</head>
+<body>
+  <main class="shell">
+    <section class="hero">
+      <p class="eyebrow">DOCX FORMATTER</p>
+      <h1>按公文规范自动整理 Word 格式</h1>
+      <p class="lead">
+        上传 `.docx` 后，应用会按《苏水储〔2018〕1号》通知规则重排页面、行距、层次序号、正文字体、附件段落和页码样式，并给出一份格式检查报告。
+      </p>
+    </section>
+
+    <section class="body">
+      <div class="panel">
+        <h2 class="section-title">上传文档</h2>
+        <label class="dropzone" id="dropzone">
+          <input id="fileInput" type="file" accept=".docx" />
+          <div class="dropzone-copy">
+            <strong>拖入文件，或点击选择</strong>
+            <span>当前 MVP 仅处理 `.docx`，不会直接修改原文件。</span>
+          </div>
+        </label>
+        <div class="file-pill" id="filePill"></div>
+        <div class="actions">
+          <button id="submitBtn" disabled>开始整理</button>
+          <a class="download-btn" id="downloadBtn" style="display:none" download>下载整理后文档</a>
+        </div>
+        <div class="status" id="statusText">等待选择文件</div>
+
+        <div class="report-block">
+          <h3>已落地规则</h3>
+          <ul class="report-list">
+            <li>纸张按 A4 设置，页边距上 37mm、下 32mm、左 28mm、右 26mm。</li>
+            <li>标题、一级标题、二级标题、正文、发文字号分别切换到对应公文字体。</li>
+            <li>正文默认首行缩进 2 字，统一行距为 29.5 磅。</li>
+            <li>“附件：...” 按左空 2 字并在正文下空一行处理。</li>
+            <li>数字和西文字母统一设为 `Times New Roman`。</li>
+            <li>页脚自动插入 4 号宋体 `- 页码 -` 样式页码，当前默认靠右。</li>
+          </ul>
+          <p class="hint">盖章避让、装订、双面印刷偏差属于输出环节，不在 `.docx` 内自动完成。</p>
+        </div>
+      </div>
+
+      <div class="panel">
+        <h2 class="section-title">格式检查报告</h2>
+        <div id="emptyState" class="empty">整理完成后，这里会显示处理总览、警告和段落识别明细。</div>
+
+        <div id="reportRoot" style="display:none">
+          <div class="metrics">
+            <div class="metric"><strong id="metricParagraphs">0</strong><span>已处理段落</span></div>
+            <div class="metric"><strong id="metricWarnings">0</strong><span>待人工复核</span></div>
+            <div class="metric"><strong id="metricTables">0</strong><span>已处理表格</span></div>
+            <div class="metric"><strong id="metricKinds">0</strong><span>识别类型数</span></div>
+          </div>
+
+          <div class="download-pill" id="downloadPill"></div>
+
+          <div class="report-block">
+            <h3>全局警告</h3>
+            <ul class="report-list" id="warningsList"></ul>
+          </div>
+
+          <div class="report-block">
+            <h3>识别统计</h3>
+            <ul class="report-list" id="kindList"></ul>
+          </div>
+
+          <div class="report-block">
+            <h3>段落明细</h3>
+            <div class="paragraph-list" id="paragraphList"></div>
+          </div>
+        </div>
+      </div>
+    </section>
+  </main>
+
+  <script src="./config.js"></script>
+  <script>
+    const API_BASE_URL = (window.APP_CONFIG?.API_BASE_URL || "").replace(/\/$/, "");
+    const apiUrl = (path) => `${API_BASE_URL}${path}`;
+
+    const dropzone = document.getElementById("dropzone");
+    const fileInput = document.getElementById("fileInput");
+    const filePill = document.getElementById("filePill");
+    const submitBtn = document.getElementById("submitBtn");
+    const downloadBtn = document.getElementById("downloadBtn");
+    const downloadPill = document.getElementById("downloadPill");
+    const statusText = document.getElementById("statusText");
+    const emptyState = document.getElementById("emptyState");
+    const reportRoot = document.getElementById("reportRoot");
+    const warningsList = document.getElementById("warningsList");
+    const kindList = document.getElementById("kindList");
+    const paragraphList = document.getElementById("paragraphList");
+    const metricParagraphs = document.getElementById("metricParagraphs");
+    const metricWarnings = document.getElementById("metricWarnings");
+    const metricTables = document.getElementById("metricTables");
+    const metricKinds = document.getElementById("metricKinds");
+
+    let selectedFile = null;
+
+    const setFile = (file) => {
+      if (!file) {
+        selectedFile = null;
+        submitBtn.disabled = true;
+        filePill.style.display = "none";
+        statusText.textContent = "等待选择文件";
+        return;
+      }
+
+      if (!file.name.toLowerCase().endsWith(".docx")) {
+        statusText.textContent = "只支持 .docx 文件";
+        return;
+      }
+
+      selectedFile = file;
+      filePill.textContent = `已选择：${file.name}`;
+      filePill.style.display = "block";
+      submitBtn.disabled = false;
+      statusText.textContent = "文件已就绪";
+    };
+
+    const renderList = (root, items, { warn = false } = {}) => {
+      root.innerHTML = "";
+      if (!items.length) {
+        const li = document.createElement("li");
+        li.textContent = warn ? "未发现额外警告" : "暂无数据";
+        if (warn) li.className = "warning";
+        root.appendChild(li);
+        return;
+      }
+      items.forEach((item) => {
+        const li = document.createElement("li");
+        li.textContent = item;
+        if (warn) li.className = "warning";
+        root.appendChild(li);
+      });
+    };
+
+    const renderParagraphs = (items) => {
+      paragraphList.innerHTML = "";
+      items.forEach((item) => {
+        const card = document.createElement("article");
+        card.className = "paragraph-card";
+
+        const meta = document.createElement("div");
+        meta.className = "paragraph-meta";
+        meta.innerHTML = `
+          <span class="chip">第 ${item.index} 段</span>
+          <span class="chip">${item.kind}</span>
+          <span>中文字体 ${item.font_east_asia || "-"}</span>
+          <span>西文字体 ${item.font_ascii || "-"}</span>
+          <span>${item.font_size_pt || 0}pt</span>
+          <span>${item.alignment}</span>
+        `;
+
+        const text = document.createElement("p");
+        text.className = "paragraph-text";
+        text.textContent = item.text;
+
+        const actions = document.createElement("ul");
+        actions.className = "sublist";
+        item.actions.forEach((action) => {
+          const li = document.createElement("li");
+          li.textContent = action;
+          actions.appendChild(li);
+        });
+
+        card.appendChild(meta);
+        card.appendChild(text);
+        card.appendChild(actions);
+
+        if (item.warnings.length) {
+          const warnings = document.createElement("ul");
+          warnings.className = "sublist warning";
+          item.warnings.forEach((warning) => {
+            const li = document.createElement("li");
+            li.textContent = warning;
+            warnings.appendChild(li);
+          });
+          card.appendChild(warnings);
+        }
+
+        paragraphList.appendChild(card);
+      });
+    };
+
+    const renderReport = (payload) => {
+      const report = payload.report;
+      emptyState.style.display = "none";
+      reportRoot.style.display = "block";
+
+      metricParagraphs.textContent = report.paragraph_count;
+      metricWarnings.textContent = report.warning_count;
+      metricTables.textContent = report.tables_updated;
+      metricKinds.textContent = Object.keys(report.kind_counts || {}).length;
+
+      renderList(warningsList, report.warnings || [], { warn: true });
+      renderList(kindList, Object.entries(report.kind_counts || {}).map(([key, value]) => `${key}: ${value}`));
+      renderParagraphs(report.paragraph_reports || []);
+
+      downloadBtn.href = payload.download_url;
+      if (API_BASE_URL) {
+        downloadBtn.href = apiUrl(payload.download_url);
+      }
+      downloadBtn.download = payload.filename;
+      downloadBtn.style.display = "inline-flex";
+      downloadPill.textContent = `输出文件：${payload.filename}`;
+      downloadPill.style.display = "block";
+    };
+
+    fileInput.addEventListener("change", (event) => {
+      setFile(event.target.files?.[0] || null);
+    });
+
+    ["dragenter", "dragover"].forEach((eventName) => {
+      dropzone.addEventListener(eventName, (event) => {
+        event.preventDefault();
+        dropzone.classList.add("dragover");
+      });
+    });
+
+    ["dragleave", "drop"].forEach((eventName) => {
+      dropzone.addEventListener(eventName, (event) => {
+        event.preventDefault();
+        dropzone.classList.remove("dragover");
+      });
+    });
+
+    dropzone.addEventListener("drop", (event) => {
+      const file = event.dataTransfer?.files?.[0] || null;
+      setFile(file);
+    });
+
+    submitBtn.addEventListener("click", async () => {
+      if (!selectedFile) return;
+
+      submitBtn.disabled = true;
+      statusText.textContent = "正在整理格式并生成报告...";
+
+      const formData = new FormData();
+      formData.append("file", selectedFile);
+
+      try {
+        const response = await fetch(apiUrl("/api/format"), {
+          method: "POST",
+          body: formData,
+        });
+        const payload = await response.json().catch(() => ({}));
+        if (!response.ok) {
+          throw new Error(payload.detail || "格式整理失败");
+        }
+
+        if (API_BASE_URL && payload.download_url) {
+          payload.download_url = apiUrl(payload.download_url);
+        }
+
+        renderReport(payload);
+        statusText.textContent = "已生成整理后的文档和格式检查报告";
+      } catch (error) {
+        statusText.textContent = error.message || "处理失败";
+      } finally {
+        submitBtn.disabled = false;
+      }
+    });
+  </script>
+</body>
+</html>

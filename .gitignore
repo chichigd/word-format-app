@@ -1,0 +1,5 @@
+word-format-app/__pycache__/
+word-format-app/output/
+word-format-app/tmp/
+word-format-app/uvicorn.pid
+word-format-app/uvicorn.log
