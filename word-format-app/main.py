@@ -1,11 +1,12 @@
 from __future__ import annotations
 
+import os
 import shutil
 import tempfile
 from pathlib import Path
 from uuid import uuid4
 
-from fastapi import FastAPI, File, HTTPException, UploadFile
+from fastapi import FastAPI, File, Header, HTTPException, UploadFile
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import FileResponse, HTMLResponse
 
@@ -15,8 +16,9 @@ APP_DIR = Path(__file__).resolve().parent
 STATIC_DIR = APP_DIR / "static"
 INDEX_FILE = STATIC_DIR / "index.html"
 OUTPUT_DIR = APP_DIR / "output"
+ACCESS_PASSWORD = os.getenv("APP_PASSWORD", "").strip()
 
-app = FastAPI(title="Word Format App", version="0.1.0")
+app = FastAPI(title="文件格式整理系统", version="0.1.0")
 app.add_middleware(
     CORSMiddleware,
     allow_origins=["*"],
@@ -32,8 +34,16 @@ def index() -> str:
     return INDEX_FILE.read_text(encoding="utf-8")
 
 
+def _validate_password(x_app_password: str | None) -> None:
+    if not ACCESS_PASSWORD:
+        return
+    if (x_app_password or "").strip() != ACCESS_PASSWORD:
+        raise HTTPException(status_code=401, detail="访问口令不正确。")
+
+
 @app.get("/api/download/{filename}")
-def download_file(filename: str) -> FileResponse:
+def download_file(filename: str, x_app_password: str | None = Header(default=None)) -> FileResponse:
+    _validate_password(x_app_password)
     target = OUTPUT_DIR / Path(filename).name
     if not target.exists():
         raise HTTPException(status_code=404, detail="Formatted file not found.")
@@ -45,7 +55,8 @@ def download_file(filename: str) -> FileResponse:
 
 
 @app.post("/api/format")
-async def format_word(file: UploadFile = File(...)) -> dict:
+async def format_word(file: UploadFile = File(...), x_app_password: str | None = Header(default=None)) -> dict:
+    _validate_password(x_app_password)
     suffix = Path(file.filename or "").suffix.lower()
     if suffix != ".docx":
         raise HTTPException(status_code=400, detail="Only .docx files are supported.")

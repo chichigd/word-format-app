@@ -6,6 +6,7 @@
 
 - 上传 `.docx` 并生成新的整理后文档
 - 返回格式检查报告，列出段落识别结果、处理动作和待人工复核项
+- 支持通过访问口令限制上传与下载
 - 统一 A4 页面和页边距
 - 统一标题、一级标题、二级标题、正文、发文字号的字体与字号
 - 统一正文行距为 29.5 磅
@@ -37,6 +38,7 @@ uvicorn main:app --reload
 - 选择这个仓库
 - Build Command 填：`pip install -r requirements.txt`
 - Start Command 填：`uvicorn main:app --host 0.0.0.0 --port $PORT`
+- Environment Variables 里可新增：`APP_PASSWORD=你设置的访问口令`
 
 也可以直接使用仓库里的 [render.yaml](/Users/mao/Documents/Codex/word-format-app/render.yaml)。
 
@@ -62,6 +64,8 @@ window.APP_CONFIG = {
 - 在 Netlify 里部署这个项目时，把发布目录设为 `static`
 
 仓库里已经提供了 [netlify.toml](/Users/mao/Documents/Codex/word-format-app/netlify.toml)，可直接使用。
+
+如果后端启用了 `APP_PASSWORD`，网页端会显示访问口令输入框。输入一次后可保存在当前浏览器。
 
 ## 说明
 
