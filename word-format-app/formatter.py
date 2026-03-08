@@ -33,9 +33,13 @@ LEVEL2_RE = re.compile(r"^（[一二三四五六七八九十]+）")
 LEVEL3_RE = re.compile(r"^\d+\.")
 LEVEL4_RE = re.compile(r"^（\d+）")
 ARABIC_ITEM_RE = re.compile(r"^\s*(\d+)[.．、]?\s*")
+CN_BRACKET_ITEM_RE = re.compile(r"^\s*[（(]?([一二三四五六七八九十])[）)]?\s*")
 DATE_RE = re.compile(r"^\d{4}\s*年\s*\d{1,2}\s*月\s*\d{1,2}\s*日$")
 ATTACHMENT_RE = re.compile(r"^附件[：:]")
 LATIN_RE = re.compile(r"[A-Za-z0-9]")
+KEYPOINT_RE = re.compile(r"(一是|二是|三是|四是|五是|六是|七是|八是|九是|十是)")
+CN_NUMERALS = "一二三四五六七八九十"
+ZH_CHAR_RE = r"\u4e00-\u9fff"
 
 
 @dataclass
@@ -75,6 +79,7 @@ def format_document(input_path: Path, output_path: Path) -> FormatSummary:
     summary = FormatSummary()
 
     _set_document_layout(doc)
+    _normalize_text_spacing(doc)
     _normalize_paragraph_structure(doc)
     _normalize_numbered_sequences(doc)
     _format_paragraphs(doc, summary)
@@ -133,23 +138,57 @@ def _insert_paragraph_after(paragraph: Paragraph, text: str) -> Paragraph:
     return new_para
 
 
+def _normalize_text_spacing(doc: DocumentObject) -> None:
+    for paragraph in doc.paragraphs:
+        if not paragraph.text.strip():
+            continue
+        normalized = _clean_spacing(paragraph.text)
+        if normalized != paragraph.text:
+            paragraph.text = normalized
+
+
+def _clean_spacing(text: str) -> str:
+    lines = []
+    for raw_line in text.splitlines():
+        line = raw_line.strip()
+        line = re.sub(r"[ \t]{2,}", " ", line)
+        line = re.sub(rf"([{ZH_CHAR_RE}])\s+([{ZH_CHAR_RE}])", r"\1\2", line)
+        line = re.sub(rf"([{ZH_CHAR_RE}])\s+([，。；：！？、】【（）《》“”‘’])", r"\1\2", line)
+        line = re.sub(rf"([，。；：！？、】【（）《》“”‘’])\s+([{ZH_CHAR_RE}])", r"\1\2", line)
+        line = re.sub(r"^([一二三四五六七八九十]+、)\s+", r"\1", line)
+        line = re.sub(r"^(（[一二三四五六七八九十]+）)\s+", r"\1", line)
+        line = re.sub(r"^(\d+\.)\s+", r"\1", line)
+        line = re.sub(r"^(附件[：:])\s+", r"\1", line)
+        line = re.sub(r"\s+([：:；，。！？])", r"\1", line)
+        lines.append(line)
+    return "\n".join(lines)
+
+
 def _normalize_numbered_sequences(doc: DocumentObject) -> None:
-    counter = None
+    arabic_counter = None
+    chinese_counter = None
     for paragraph in doc.paragraphs:
         text = paragraph.text.strip()
         if not text:
             continue
 
         if LEVEL1_RE.match(text):
-            counter = None
+            arabic_counter = None
+            chinese_counter = None
             continue
 
         if _has_word_numbering(paragraph) or ARABIC_ITEM_RE.match(text):
-            counter = 1 if counter is None else counter + 1
-            paragraph.text = _replace_leading_number(text, counter)
+            arabic_counter = 1 if arabic_counter is None else arabic_counter + 1
+            paragraph.text = _replace_leading_number(text, arabic_counter)
             _remove_word_numbering(paragraph)
+            chinese_counter = None
+        elif _is_chinese_bracket_candidate(text):
+            chinese_counter = 1 if chinese_counter is None else chinese_counter + 1
+            paragraph.text = _replace_leading_cn_bracket_number(text, chinese_counter)
+            arabic_counter = None
         else:
-            counter = None
+            arabic_counter = None
+            chinese_counter = None
 
 
 def _has_word_numbering(paragraph: Paragraph) -> bool:
@@ -167,6 +206,16 @@ def _remove_word_numbering(paragraph: Paragraph) -> None:
 def _replace_leading_number(text: str, number: int) -> str:
     stripped = ARABIC_ITEM_RE.sub("", text, count=1).lstrip()
     return f"{number}.{stripped}"
+
+
+def _is_chinese_bracket_candidate(text: str) -> bool:
+    return not LEVEL1_RE.match(text) and bool(CN_BRACKET_ITEM_RE.match(text))
+
+
+def _replace_leading_cn_bracket_number(text: str, number: int) -> str:
+    stripped = CN_BRACKET_ITEM_RE.sub("", text, count=1).lstrip()
+    numeral = CN_NUMERALS[number - 1] if 1 <= number <= len(CN_NUMERALS) else str(number)
+    return f"（{numeral}）{stripped}"
 
 
 def _format_paragraphs(doc: DocumentObject, summary: FormatSummary) -> None:
@@ -275,6 +324,7 @@ def _format_paragraphs(doc: DocumentObject, summary: FormatSummary) -> None:
             actions.append("按正文设置为方正仿宋_GBK三号，首行缩进2字")
 
         _apply_western_font_normalization(paragraph, actions)
+        _apply_keypoint_bold(paragraph, kind)
         _collect_sequence_warnings(kind, text, warnings)
         if len(text) > 120 and kind in {"title", "level1", "level2"}:
             warnings.append("该段较长但被识别为标题类，建议人工复核。")
@@ -465,6 +515,31 @@ def _normalize_paragraph_spacing(paragraph: Paragraph) -> None:
 def _apply_western_font_normalization(paragraph: Paragraph, actions: list[str]) -> None:
     if LATIN_RE.search(paragraph.text):
         actions.append("数字和西文字母统一设置为 Times New Roman")
+
+
+def _apply_keypoint_bold(paragraph: Paragraph, kind: str) -> None:
+    if kind not in {"body", "salutation", "level3", "level4", "attachment"}:
+        return
+    text = paragraph.text
+    if not KEYPOINT_RE.search(text):
+        return
+
+    segments: list[tuple[str, bool]] = []
+    cursor = 0
+    for match in KEYPOINT_RE.finditer(text):
+        if match.start() > cursor:
+            segments.append((text[cursor:match.start()], False))
+        segments.append((match.group(0), True))
+        cursor = match.end()
+    if cursor < len(text):
+        segments.append((text[cursor:], False))
+
+    for run in list(paragraph.runs):
+        run._element.getparent().remove(run._element)
+
+    for content, is_bold in segments:
+        run = paragraph.add_run(content)
+        _set_run_fonts(run, BODY_FONT, BODY_SIZE, is_bold)
 
 
 def _collect_sequence_warnings(kind: str, text: str, warnings: list[str]) -> None:
