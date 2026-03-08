@@ -11,6 +11,7 @@ from docx.enum.text import WD_ALIGN_PARAGRAPH
 from docx.oxml import OxmlElement
 from docx.oxml.ns import qn
 from docx.shared import Mm, Pt, RGBColor
+from docx.enum.table import WD_CELL_VERTICAL_ALIGNMENT
 from docx.table import _Cell, Table
 from docx.text.paragraph import Paragraph
 from docx.text.run import Run
@@ -87,7 +88,7 @@ def format_document(input_path: Path, output_path: Path) -> FormatSummary:
     summary.footer_updated = _set_page_footer(doc)
 
     if summary.footer_updated:
-        summary.warnings.append("页码已统一设置为页脚右侧；如需区分奇偶页外侧，还需在 Word 中进一步处理。")
+        summary.warnings.append("页码已设置为双面打印外侧页码：奇数页在右侧，偶数页在左侧。")
 
     output_path.parent.mkdir(parents=True, exist_ok=True)
     doc.save(str(output_path))
@@ -476,31 +477,87 @@ def _split_title_lines(text: str) -> list[str]:
         main = main.strip()
         suffix = "（" + suffix.strip()
         if len(main) >= 10:
-            return [main, suffix]
+            first, second = _pick_title_break(main)
+            return [first, second + suffix]
 
+    first, second = _pick_title_break(text)
+    return [first, second]
+
+
+def _pick_title_break(text: str) -> tuple[str, str]:
     midpoint = len(text) // 2
+    preferred_break_before = [
+        "征求意见汇总",
+        "工作学习心得",
+        "学习心得",
+        "情况汇报",
+        "工作总结",
+        "实施方案",
+        "征求意见",
+        "意见汇总",
+        "工作要点",
+        "总结",
+        "汇总",
+        "方案",
+        "报告",
+        "通知",
+    ]
     candidates = []
-    markers = ["汇总", "情况", "意见", "建议", "报告", "方案", "通知", "年度", "会议", "组织生活会"]
-    for marker in markers:
-        pos = text.find(marker)
-        if pos != -1:
-            break_pos = pos + len(marker)
-            if 6 <= break_pos <= len(text) - 6:
-                candidates.append(break_pos)
+    for phrase in preferred_break_before:
+        pos = text.find(phrase)
+        if pos != -1 and 8 <= pos <= len(text) - 8:
+            candidates.append(pos)
 
     if candidates:
         break_pos = min(candidates, key=lambda pos: abs(pos - midpoint))
-        return [text[:break_pos], text[break_pos:]]
+        return text[:break_pos], text[break_pos:]
 
-    break_pos = midpoint
-    return [text[:break_pos], text[break_pos:]]
+    semantic_break_after = [
+        "组织生活会征求意见汇总",
+        "组织生活会",
+        "工作学习心得",
+        "征求意见汇总",
+        "征求意见",
+        "意见汇总",
+        "年度",
+        "会议",
+        "情况",
+        "报告",
+        "通知",
+    ]
+    trailing = []
+    for phrase in semantic_break_after:
+        pos = text.find(phrase)
+        if pos != -1:
+            break_pos = pos + len(phrase)
+            if 8 <= break_pos <= len(text) - 8:
+                trailing.append(break_pos)
+    if trailing:
+        break_pos = min(trailing, key=lambda pos: abs(pos - midpoint))
+        return text[:break_pos], text[break_pos:]
+
+    candidates = []
+    for i in range(8, len(text) - 8):
+        if text[i - 1] not in "的一了和与及并" and text[i] not in "的一了和与及并":
+            candidates.append(i)
+    break_pos = min(candidates or [midpoint], key=lambda pos: abs(pos - midpoint))
+    return text[:break_pos], text[break_pos:]
 
 
 def _clear_paragraph_border(paragraph: Paragraph) -> None:
     p_pr = paragraph._p.get_or_add_pPr()
+    p_style = p_pr.find(qn("w:pStyle"))
+    if p_style is not None:
+        p_pr.remove(p_style)
     p_bdr = p_pr.find(qn("w:pBdr"))
     if p_bdr is not None:
         p_pr.remove(p_bdr)
+    p_bdr = OxmlElement("w:pBdr")
+    for side in ("top", "left", "bottom", "right", "between"):
+        border = OxmlElement(f"w:{side}")
+        border.set(qn("w:val"), "nil")
+        p_bdr.append(border)
+    p_pr.append(p_bdr)
 
 
 def _normalize_paragraph_spacing(paragraph: Paragraph) -> None:
@@ -619,31 +676,37 @@ def _format_table(table: Table) -> None:
 
 
 def _format_cell(cell: _Cell) -> None:
+    cell.vertical_alignment = WD_CELL_VERTICAL_ALIGNMENT.CENTER
     for paragraph in cell.paragraphs:
         text = paragraph.text.strip()
         kind = "level1" if LEVEL1_RE.match(text) else "body"
         if kind == "level1":
-            _apply_paragraph_style(paragraph, LEVEL1_FONT, BODY_SIZE, bold=False, first_line_chars=2, alignment=WD_ALIGN_PARAGRAPH.LEFT)
+            _apply_paragraph_style(paragraph, LEVEL1_FONT, BODY_SIZE, bold=False, first_line_chars=0, alignment=WD_ALIGN_PARAGRAPH.CENTER)
         else:
-            _apply_paragraph_style(paragraph, BODY_FONT, BODY_SIZE, bold=False, first_line_chars=2, alignment=WD_ALIGN_PARAGRAPH.LEFT)
+            _apply_paragraph_style(paragraph, BODY_FONT, BODY_SIZE, bold=False, first_line_chars=0, alignment=WD_ALIGN_PARAGRAPH.CENTER)
     for table in cell.tables:
         _format_table(table)
 
 
 def _set_page_footer(doc: DocumentObject) -> bool:
+    doc.settings.odd_and_even_pages_header_footer = True
     updated = False
     for section in doc.sections:
-        footer = section.footer
-        paragraph = footer.paragraphs[0] if footer.paragraphs else footer.add_paragraph()
-        paragraph.alignment = WD_ALIGN_PARAGRAPH.RIGHT
-        paragraph.clear()
-        run_left = paragraph.add_run("- ")
-        _set_page_fonts(run_left)
-        _append_page_field(paragraph)
-        run_right = paragraph.add_run(" -")
-        _set_page_fonts(run_right)
+        _write_page_footer(section.footer, WD_ALIGN_PARAGRAPH.RIGHT)
+        _write_page_footer(section.even_page_footer, WD_ALIGN_PARAGRAPH.LEFT)
         updated = True
     return updated
+
+
+def _write_page_footer(footer, alignment: WD_ALIGN_PARAGRAPH) -> None:
+    paragraph = footer.paragraphs[0] if footer.paragraphs else footer.add_paragraph()
+    paragraph.alignment = alignment
+    paragraph.clear()
+    run_left = paragraph.add_run("—")
+    _set_page_fonts(run_left)
+    _append_page_field(paragraph)
+    run_right = paragraph.add_run("—")
+    _set_page_fonts(run_right)
 
 
 def _set_page_fonts(run: Run) -> None:
