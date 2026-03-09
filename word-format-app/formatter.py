@@ -36,6 +36,9 @@ LEVEL4_RE = re.compile(r"^（\d+）")
 ARABIC_ITEM_RE = re.compile(r"^\s*(\d{1,2})([.．、]?)(\s*.+)?$")
 CN_BRACKET_ITEM_RE = re.compile(r"^\s*[（(]([一二三四五六七八九十]+)[）)](\s*.+)?$")
 DATE_RE = re.compile(r"^\d{4}\s*年\s*\d{1,2}\s*月(?:\s*\d{1,2}\s*日)?$")
+SIGNATURE_DATE_RE = re.compile(
+    r"^(?:\d{4}|[_＿]{2,})\s*年\s*(?:\d{1,2}|[_＿]{1,})\s*月(?:\s*(?:\d{1,2}|[_＿]{1,})\s*日)?$"
+)
 ATTACHMENT_RE = re.compile(r"^附件[：:]")
 LATIN_RE = re.compile(r"[A-Za-z0-9]")
 KEYPOINT_RE = re.compile(r"(一是|二是|三是|四是|五是|六是|七是|八是|九是|十是)")
@@ -83,6 +86,7 @@ def format_document(input_path: Path, output_path: Path) -> FormatSummary:
     _set_document_layout(doc)
     _normalize_text_spacing(doc)
     _normalize_paragraph_structure(doc)
+    _split_heading_body_paragraphs(doc)
     _normalize_inline_subheadings(doc)
     _normalize_numbered_sequences(doc)
     _format_paragraphs(doc, summary)
@@ -153,6 +157,40 @@ def _normalize_inline_subheadings(doc: DocumentObject) -> None:
         idx += 1
 
 
+def _split_heading_body_paragraphs(doc: DocumentObject) -> None:
+    for paragraph in list(doc.paragraphs):
+        text = paragraph.text.strip()
+        if not text:
+            continue
+
+        split_parts = _split_level2_heading_and_body(text)
+        if split_parts is None:
+            continue
+
+        heading, body = split_parts
+        paragraph.text = heading
+        _insert_paragraph_after(paragraph, body)
+
+
+def _split_level2_heading_and_body(text: str) -> tuple[str, str] | None:
+    if not LEVEL2_RE.match(text):
+        return None
+
+    match = re.match(r"^(（[一二三四五六七八九十]+）.+?[。！？：:])(.+)$", text)
+    if not match:
+        return None
+
+    heading = match.group(1).strip()
+    body = match.group(2).strip()
+    if not body or not _is_body_following_paragraph(body):
+        return None
+
+    if len(heading) > 32:
+        return None
+
+    return heading, body
+
+
 def _is_inline_subheading_candidate(text: str) -> bool:
     if not text or len(text) > 40:
         return False
@@ -215,9 +253,10 @@ def _clean_spacing(text: str) -> str:
 
 
 def _normalize_numbered_sequences(doc: DocumentObject) -> None:
+    paragraphs = doc.paragraphs
     arabic_counter = None
     chinese_counter = None
-    for paragraph in doc.paragraphs:
+    for idx, paragraph in enumerate(paragraphs):
         text = paragraph.text.strip()
         if not text:
             continue
@@ -233,20 +272,29 @@ def _normalize_numbered_sequences(doc: DocumentObject) -> None:
             continue
 
         if _is_chinese_bracket_candidate(text):
-            chinese_counter = 1 if chinese_counter is None else chinese_counter + 1
-            paragraph.text = _replace_leading_cn_bracket_number(text, chinese_counter)
-            _remove_word_numbering(paragraph)
+            if chinese_counter is not None or _has_following_chinese_bracket_item(paragraphs, idx):
+                chinese_counter = 1 if chinese_counter is None else chinese_counter + 1
+                paragraph.text = _replace_leading_cn_bracket_number(text, chinese_counter)
+                _remove_word_numbering(paragraph)
+            else:
+                chinese_counter = None
             arabic_counter = None
             continue
 
         if _has_word_numbering(paragraph) or _is_arabic_item_candidate(text):
-            arabic_counter = 1 if arabic_counter is None else arabic_counter + 1
-            paragraph.text = _replace_leading_number(text, arabic_counter)
-            _remove_word_numbering(paragraph)
+            if arabic_counter is not None or _has_following_arabic_item(paragraphs, idx):
+                arabic_counter = 1 if arabic_counter is None else arabic_counter + 1
+                paragraph.text = _replace_leading_number(text, arabic_counter)
+                _remove_word_numbering(paragraph)
+            else:
+                if _has_word_numbering(paragraph):
+                    _remove_word_numbering(paragraph)
+                arabic_counter = None
+            chinese_counter = None
             continue
 
-        if _is_arabic_sequence_boundary(text):
-            arabic_counter = None
+        arabic_counter = None
+        chinese_counter = None
 
 
 def _is_hard_sequence_boundary(text: str) -> bool:
@@ -287,6 +335,24 @@ def _replace_leading_cn_bracket_number(text: str, number: int) -> str:
     stripped = match.group(2).lstrip() if match and match.group(2) else text.lstrip()
     numeral = CN_NUMERALS[number - 1] if 1 <= number <= len(CN_NUMERALS) else str(number)
     return f"（{numeral}）{stripped}"
+
+
+def _has_following_arabic_item(paragraphs: list[Paragraph], start_idx: int) -> bool:
+    for paragraph in paragraphs[start_idx + 1:]:
+        text = paragraph.text.strip()
+        if not text:
+            continue
+        return _has_word_numbering(paragraph) or _is_arabic_item_candidate(text)
+    return False
+
+
+def _has_following_chinese_bracket_item(paragraphs: list[Paragraph], start_idx: int) -> bool:
+    for paragraph in paragraphs[start_idx + 1:]:
+        text = paragraph.text.strip()
+        if not text:
+            continue
+        return _is_chinese_bracket_candidate(text)
+    return False
 
 
 def _is_arabic_item_candidate(text: str) -> bool:
@@ -331,6 +397,7 @@ def _is_arabic_sequence_boundary(text: str) -> bool:
 def _format_paragraphs(doc: DocumentObject, summary: FormatSummary) -> None:
     title_indices = _detect_title_indices(doc.paragraphs)
     author_indices = _detect_author_indices(doc.paragraphs, title_indices)
+    signature_indices, signature_date_index = _detect_signature_indices(doc.paragraphs)
 
     for idx, paragraph in enumerate(doc.paragraphs):
         text = paragraph.text.strip()
@@ -338,7 +405,14 @@ def _format_paragraphs(doc: DocumentObject, summary: FormatSummary) -> None:
             _normalize_paragraph_spacing(paragraph)
             continue
 
-        kind = _classify_paragraph(text, idx, title_indices, author_indices)
+        kind = _classify_paragraph(
+            text,
+            idx,
+            title_indices,
+            author_indices,
+            signature_indices,
+            signature_date_index,
+        )
         actions: list[str] = []
         warnings: list[str] = []
 
@@ -375,6 +449,15 @@ def _format_paragraphs(doc: DocumentObject, summary: FormatSummary) -> None:
                 alignment=WD_ALIGN_PARAGRAPH.CENTER,
             )
             actions.append("按作者名设置为方正楷体_GBK三号居中")
+        elif kind == "signature":
+            _apply_paragraph_style(
+                paragraph,
+                BODY_FONT,
+                BODY_SIZE,
+                bold=False,
+                alignment=WD_ALIGN_PARAGRAPH.RIGHT,
+            )
+            actions.append("按落款单位设置为方正仿宋_GBK三号右对齐")
         elif kind == "level1":
             _apply_paragraph_style(
                 paragraph,
@@ -422,10 +505,9 @@ def _format_paragraphs(doc: DocumentObject, summary: FormatSummary) -> None:
                 BODY_FONT,
                 BODY_SIZE,
                 bold=False,
-                first_line_chars=2,
                 alignment=WD_ALIGN_PARAGRAPH.LEFT,
             )
-            actions.append("按称呼段设置为方正仿宋_GBK三号，首行缩进2字")
+            actions.append("按称呼段设置为方正仿宋_GBK三号顶格")
         elif kind == "date":
             _apply_paragraph_style(
                 paragraph,
@@ -437,6 +519,15 @@ def _format_paragraphs(doc: DocumentObject, summary: FormatSummary) -> None:
             actions.append("按年月设置为方正楷体_GBK三号居中")
             if any(ch in text for ch in "〇零壹贰叁肆伍陆柒捌玖拾"):
                 warnings.append("成文日期疑似使用大写汉字，建议改为阿拉伯数字。")
+        elif kind == "signature_date":
+            _apply_paragraph_style(
+                paragraph,
+                BODY_FONT,
+                BODY_SIZE,
+                bold=False,
+                alignment=WD_ALIGN_PARAGRAPH.RIGHT,
+            )
+            actions.append("按落款日期设置为方正仿宋_GBK三号右对齐")
         else:
             _apply_paragraph_style(
                 paragraph,
@@ -460,9 +551,20 @@ def _format_paragraphs(doc: DocumentObject, summary: FormatSummary) -> None:
         summary.paragraphs_updated += 1
 
 
-def _classify_paragraph(text: str, index: int, title_indices: set[int], author_indices: set[int]) -> str:
+def _classify_paragraph(
+    text: str,
+    index: int,
+    title_indices: set[int],
+    author_indices: set[int],
+    signature_indices: set[int] | None = None,
+    signature_date_index: int | None = None,
+) -> str:
     if DOC_NO_RE.match(text):
         return "doc_number"
+    if signature_date_index is not None and index == signature_date_index:
+        return "signature_date"
+    if signature_indices and index in signature_indices:
+        return "signature"
     if index in author_indices:
         return "author"
     if index in title_indices:
@@ -477,7 +579,7 @@ def _classify_paragraph(text: str, index: int, title_indices: set[int], author_i
         return "level4"
     if ATTACHMENT_RE.match(text):
         return "attachment"
-    if text.endswith(("：", ":")):
+    if _is_salutation_text(text):
         return "salutation"
     if DATE_RE.match(text):
         return "date"
@@ -490,7 +592,7 @@ def _detect_title_indices(paragraphs: list[Paragraph]) -> set[int]:
         return set()
 
     doc_no_index = next((idx for idx, text in non_empty if DOC_NO_RE.match(text)), None)
-    salutation_index = next((idx for idx, text in non_empty if text.endswith(("：", ":"))), None)
+    salutation_index = next((idx for idx, text in non_empty if _is_salutation_text(text)), None)
     first_level1_index = next((idx for idx, text in non_empty if LEVEL1_RE.match(text)), None)
 
     start = 0
@@ -549,6 +651,57 @@ def _detect_author_indices(paragraphs: list[Paragraph], title_indices: set[int])
             author_indices.add(idx)
             break
     return author_indices
+
+
+def _is_salutation_text(text: str) -> bool:
+    return bool(
+        text.endswith(("：", ":"))
+        and len(text) <= 24
+        and not re.search(r"[。；，！？]", text)
+        and not LEVEL1_RE.match(text)
+        and not LEVEL2_RE.match(text)
+        and not LEVEL3_RE.match(text)
+        and not LEVEL4_RE.match(text)
+    )
+
+
+def _detect_signature_indices(paragraphs: list[Paragraph]) -> tuple[set[int], int | None]:
+    non_empty = [(idx, p.text.strip()) for idx, p in enumerate(paragraphs) if p.text.strip()]
+    if not non_empty:
+        return set(), None
+
+    date_idx = None
+    for idx, text in reversed(non_empty):
+        if SIGNATURE_DATE_RE.match(text):
+            date_idx = idx
+            break
+    if date_idx is None:
+        return set(), None
+
+    signature_indices: set[int] = set()
+    taken = 0
+    for idx, text in reversed(non_empty):
+        if idx >= date_idx:
+            continue
+        if taken >= 3:
+            break
+        if (
+            len(text) <= 24
+            and not re.search(r"[。；，：:]", text)
+            and not LEVEL1_RE.match(text)
+            and not LEVEL2_RE.match(text)
+            and not LEVEL3_RE.match(text)
+            and not LEVEL4_RE.match(text)
+            and not ATTACHMENT_RE.match(text)
+            and not DOC_NO_RE.match(text)
+            and not text.endswith(("：", ":"))
+        ):
+            signature_indices.add(idx)
+            taken += 1
+            continue
+        break
+
+    return signature_indices, date_idx
 
 
 def _apply_paragraph_style(
