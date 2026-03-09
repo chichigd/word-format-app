@@ -33,14 +33,15 @@ LEVEL1_RE = re.compile(r"^[一二三四五六七八九十]+、")
 LEVEL2_RE = re.compile(r"^（[一二三四五六七八九十]+）")
 LEVEL3_RE = re.compile(r"^\d+\.")
 LEVEL4_RE = re.compile(r"^（\d+）")
-ARABIC_ITEM_RE = re.compile(r"^\s*(\d+)[.．、]?\s*")
-CN_BRACKET_ITEM_RE = re.compile(r"^\s*[（(]?([一二三四五六七八九十])[）)]?\s*")
-DATE_RE = re.compile(r"^\d{4}\s*年\s*\d{1,2}\s*月\s*\d{1,2}\s*日$")
+ARABIC_ITEM_RE = re.compile(r"^\s*(\d{1,2})([.．、]?)(\s*.+)?$")
+CN_BRACKET_ITEM_RE = re.compile(r"^\s*[（(]([一二三四五六七八九十]+)[）)](\s*.+)?$")
+DATE_RE = re.compile(r"^\d{4}\s*年\s*\d{1,2}\s*月(?:\s*\d{1,2}\s*日)?$")
 ATTACHMENT_RE = re.compile(r"^附件[：:]")
 LATIN_RE = re.compile(r"[A-Za-z0-9]")
 KEYPOINT_RE = re.compile(r"(一是|二是|三是|四是|五是|六是|七是|八是|九是|十是)")
 CN_NUMERALS = "一二三四五六七八九十"
 ZH_CHAR_RE = r"\u4e00-\u9fff"
+YEAR_PREFIX_RE = re.compile(r"^\s*(?:19|20)\d{2}\s*年(?:度)?")
 
 
 @dataclass
@@ -82,6 +83,7 @@ def format_document(input_path: Path, output_path: Path) -> FormatSummary:
     _set_document_layout(doc)
     _normalize_text_spacing(doc)
     _normalize_paragraph_structure(doc)
+    _normalize_inline_subheadings(doc)
     _normalize_numbered_sequences(doc)
     _format_paragraphs(doc, summary)
     _format_tables(doc, summary)
@@ -131,6 +133,53 @@ def _normalize_paragraph_structure(doc: DocumentObject) -> None:
             anchor = _insert_paragraph_after(anchor, part)
 
 
+def _normalize_inline_subheadings(doc: DocumentObject) -> None:
+    paragraphs = doc.paragraphs
+    idx = 0
+    while idx < len(paragraphs) - 1:
+        current = paragraphs[idx]
+        following = paragraphs[idx + 1]
+        current_text = current.text.strip()
+        following_text = following.text.strip()
+
+        if (
+            _is_inline_subheading_candidate(current_text)
+            and _is_body_following_paragraph(following_text)
+        ):
+            current.text = f"{current_text}{following_text}"
+            _remove_paragraph(following)
+            paragraphs = doc.paragraphs
+            continue
+        idx += 1
+
+
+def _is_inline_subheading_candidate(text: str) -> bool:
+    if not text or len(text) > 40:
+        return False
+    return bool((LEVEL3_RE.match(text) or LEVEL4_RE.match(text)) and text.endswith(("。", "？", "！")))
+
+
+def _is_body_following_paragraph(text: str) -> bool:
+    return bool(
+        text
+        and not LEVEL1_RE.match(text)
+        and not LEVEL2_RE.match(text)
+        and not LEVEL3_RE.match(text)
+        and not LEVEL4_RE.match(text)
+        and not ATTACHMENT_RE.match(text)
+        and not DOC_NO_RE.match(text)
+        and not DATE_RE.match(text)
+        and not text.endswith(("：", ":"))
+    )
+
+
+def _remove_paragraph(paragraph: Paragraph) -> None:
+    element = paragraph._element
+    parent = element.getparent()
+    if parent is not None:
+        parent.remove(element)
+
+
 def _insert_paragraph_after(paragraph: Paragraph, text: str) -> Paragraph:
     new_p = OxmlElement("w:p")
     paragraph._p.addnext(new_p)
@@ -178,18 +227,34 @@ def _normalize_numbered_sequences(doc: DocumentObject) -> None:
             chinese_counter = None
             continue
 
-        if _has_word_numbering(paragraph) or ARABIC_ITEM_RE.match(text):
+        if _is_hard_sequence_boundary(text):
+            arabic_counter = None
+            chinese_counter = None
+            continue
+
+        if _is_chinese_bracket_candidate(text):
+            chinese_counter = 1 if chinese_counter is None else chinese_counter + 1
+            paragraph.text = _replace_leading_cn_bracket_number(text, chinese_counter)
+            _remove_word_numbering(paragraph)
+            arabic_counter = None
+            continue
+
+        if _has_word_numbering(paragraph) or _is_arabic_item_candidate(text):
             arabic_counter = 1 if arabic_counter is None else arabic_counter + 1
             paragraph.text = _replace_leading_number(text, arabic_counter)
             _remove_word_numbering(paragraph)
-            chinese_counter = None
-        elif _is_chinese_bracket_candidate(text):
-            chinese_counter = 1 if chinese_counter is None else chinese_counter + 1
-            paragraph.text = _replace_leading_cn_bracket_number(text, chinese_counter)
+            continue
+
+        if _is_arabic_sequence_boundary(text):
             arabic_counter = None
-        else:
-            arabic_counter = None
-            chinese_counter = None
+
+
+def _is_hard_sequence_boundary(text: str) -> bool:
+    return bool(
+        DOC_NO_RE.match(text)
+        or DATE_RE.match(text)
+        or text.endswith(("：", ":"))
+    )
 
 
 def _has_word_numbering(paragraph: Paragraph) -> bool:
@@ -205,22 +270,67 @@ def _remove_word_numbering(paragraph: Paragraph) -> None:
 
 
 def _replace_leading_number(text: str, number: int) -> str:
-    stripped = ARABIC_ITEM_RE.sub("", text, count=1).lstrip()
+    match = ARABIC_ITEM_RE.match(text)
+    stripped = match.group(3).lstrip() if match and match.group(3) else text.lstrip()
     return f"{number}.{stripped}"
 
 
 def _is_chinese_bracket_candidate(text: str) -> bool:
-    return not LEVEL1_RE.match(text) and bool(CN_BRACKET_ITEM_RE.match(text))
+    if LEVEL1_RE.match(text):
+        return False
+    match = CN_BRACKET_ITEM_RE.match(text)
+    return bool(match and match.group(2) and match.group(2).strip())
 
 
 def _replace_leading_cn_bracket_number(text: str, number: int) -> str:
-    stripped = CN_BRACKET_ITEM_RE.sub("", text, count=1).lstrip()
+    match = CN_BRACKET_ITEM_RE.match(text)
+    stripped = match.group(2).lstrip() if match and match.group(2) else text.lstrip()
     numeral = CN_NUMERALS[number - 1] if 1 <= number <= len(CN_NUMERALS) else str(number)
     return f"（{numeral}）{stripped}"
 
 
+def _is_arabic_item_candidate(text: str) -> bool:
+    match = ARABIC_ITEM_RE.match(text)
+    if not match:
+        return False
+
+    raw_number, punctuation, remainder = match.groups()
+    if remainder is None:
+        return False
+
+    remainder = remainder.lstrip()
+    if not remainder:
+        return False
+
+    if YEAR_PREFIX_RE.match(text) or DATE_RE.match(text):
+        return False
+
+    if punctuation:
+        return True
+
+    number = int(raw_number)
+    if number > 10:
+        return False
+
+    if remainder.startswith(("年", "月", "日", "季度", "届", "次", "号")):
+        return False
+
+    return bool(re.match(rf"^[{ZH_CHAR_RE}“”\"'《（(]", remainder))
+
+
+def _is_arabic_sequence_boundary(text: str) -> bool:
+    return bool(
+        _is_chinese_bracket_candidate(text)
+        or LEVEL1_RE.match(text)
+        or LEVEL4_RE.match(text)
+        or ATTACHMENT_RE.match(text)
+        or text.endswith(("：", ":"))
+    )
+
+
 def _format_paragraphs(doc: DocumentObject, summary: FormatSummary) -> None:
     title_indices = _detect_title_indices(doc.paragraphs)
+    author_indices = _detect_author_indices(doc.paragraphs, title_indices)
 
     for idx, paragraph in enumerate(doc.paragraphs):
         text = paragraph.text.strip()
@@ -228,7 +338,7 @@ def _format_paragraphs(doc: DocumentObject, summary: FormatSummary) -> None:
             _normalize_paragraph_spacing(paragraph)
             continue
 
-        kind = _classify_paragraph(text, idx, title_indices)
+        kind = _classify_paragraph(text, idx, title_indices, author_indices)
         actions: list[str] = []
         warnings: list[str] = []
 
@@ -240,6 +350,8 @@ def _format_paragraphs(doc: DocumentObject, summary: FormatSummary) -> None:
                 TITLE_SIZE,
                 bold=False,
                 alignment=WD_ALIGN_PARAGRAPH.CENTER,
+                keep_with_next=True,
+                keep_together=True,
             )
             actions.append("按标题设置为方正小标宋_GBK二号居中，自动优化断行")
         elif kind == "doc_number":
@@ -254,6 +366,15 @@ def _format_paragraphs(doc: DocumentObject, summary: FormatSummary) -> None:
             actions.append("按发文字号设置为方正仿宋_GBK三号居中，下空2行")
             if "第" in text or "001" in text:
                 warnings.append("发文字号可能包含“第”字或虚位序号，建议人工复核。")
+        elif kind == "author":
+            _apply_paragraph_style(
+                paragraph,
+                LEVEL2_FONT,
+                BODY_SIZE,
+                bold=False,
+                alignment=WD_ALIGN_PARAGRAPH.CENTER,
+            )
+            actions.append("按作者名设置为方正楷体_GBK三号居中")
         elif kind == "level1":
             _apply_paragraph_style(
                 paragraph,
@@ -262,6 +383,8 @@ def _format_paragraphs(doc: DocumentObject, summary: FormatSummary) -> None:
                 bold=False,
                 first_line_chars=2,
                 alignment=WD_ALIGN_PARAGRAPH.LEFT,
+                keep_with_next=True,
+                keep_together=True,
             )
             actions.append("按一级标题设置为方正黑体_GBK三号，首行缩进2字")
         elif kind == "level2":
@@ -272,6 +395,8 @@ def _format_paragraphs(doc: DocumentObject, summary: FormatSummary) -> None:
                 bold=False,
                 first_line_chars=2,
                 alignment=WD_ALIGN_PARAGRAPH.LEFT,
+                keep_with_next=True,
+                keep_together=True,
             )
             actions.append("按二级标题设置为方正楷体_GBK三号，首行缩进2字")
         elif kind in {"level3", "level4", "attachment"}:
@@ -304,13 +429,12 @@ def _format_paragraphs(doc: DocumentObject, summary: FormatSummary) -> None:
         elif kind == "date":
             _apply_paragraph_style(
                 paragraph,
-                BODY_FONT,
+                LEVEL2_FONT,
                 BODY_SIZE,
                 bold=False,
-                alignment=WD_ALIGN_PARAGRAPH.RIGHT,
-                first_line_chars=2,
+                alignment=WD_ALIGN_PARAGRAPH.CENTER,
             )
-            actions.append("按成文日期设置为方正仿宋_GBK三号右对齐，首行缩进2字")
+            actions.append("按年月设置为方正楷体_GBK三号居中")
             if any(ch in text for ch in "〇零壹贰叁肆伍陆柒捌玖拾"):
                 warnings.append("成文日期疑似使用大写汉字，建议改为阿拉伯数字。")
         else:
@@ -336,9 +460,11 @@ def _format_paragraphs(doc: DocumentObject, summary: FormatSummary) -> None:
         summary.paragraphs_updated += 1
 
 
-def _classify_paragraph(text: str, index: int, title_indices: set[int]) -> str:
+def _classify_paragraph(text: str, index: int, title_indices: set[int], author_indices: set[int]) -> str:
     if DOC_NO_RE.match(text):
         return "doc_number"
+    if index in author_indices:
+        return "author"
     if index in title_indices:
         return "title"
     if LEVEL1_RE.match(text):
@@ -383,7 +509,12 @@ def _detect_title_indices(paragraphs: list[Paragraph]) -> set[int]:
 
     title_indices = set()
     for idx, text in candidates[:2]:
-        if len(text) <= 40 and not re.search(r"[。；，：:]", text):
+        if (
+            len(text) <= 40
+            and not re.search(r"[。；，：:]", text)
+            and not re.fullmatch(rf"[{ZH_CHAR_RE}·]{{2,8}}", text)
+            and not DATE_RE.match(text)
+        ):
             title_indices.add(idx)
 
     if not title_indices and non_empty:
@@ -392,6 +523,32 @@ def _detect_title_indices(paragraphs: list[Paragraph]) -> set[int]:
             title_indices.add(first_idx)
 
     return title_indices
+
+
+def _detect_author_indices(paragraphs: list[Paragraph], title_indices: set[int]) -> set[int]:
+    non_empty = [(idx, p.text.strip()) for idx, p in enumerate(paragraphs) if p.text.strip()]
+    if not non_empty or not title_indices:
+        return set()
+
+    first_title_index = min(title_indices)
+    first_level1_index = next((idx for idx, text in non_empty if LEVEL1_RE.match(text)), None)
+
+    author_indices: set[int] = set()
+    for idx, text in non_empty:
+        if idx <= first_title_index:
+            continue
+        if first_level1_index is not None and idx >= first_level1_index:
+            break
+        if DATE_RE.match(text):
+            continue
+        if (
+            len(text) <= 8
+            and re.fullmatch(rf"[{ZH_CHAR_RE}·]{{2,8}}", text)
+            and not text.endswith(("：", ":"))
+        ):
+            author_indices.add(idx)
+            break
+    return author_indices
 
 
 def _apply_paragraph_style(
@@ -405,6 +562,8 @@ def _apply_paragraph_style(
     left_chars: int | None = None,
     space_before_pt: float = 0,
     space_after_pt: float = 0,
+    keep_with_next: bool = False,
+    keep_together: bool = False,
 ) -> None:
     _normalize_paragraph_spacing(paragraph)
     if alignment is not None:
@@ -417,6 +576,8 @@ def _apply_paragraph_style(
     paragraph_format.space_after = Pt(space_after_pt)
     paragraph_format.left_indent = Pt(BODY_SIZE.pt * left_chars) if left_chars is not None else Pt(0)
     paragraph_format.first_line_indent = Pt(BODY_SIZE.pt * first_line_chars) if first_line_chars is not None else Pt(0)
+    paragraph_format.keep_with_next = keep_with_next
+    paragraph_format.keep_together = keep_together
 
     if not paragraph.runs:
         run = paragraph.add_run("")
