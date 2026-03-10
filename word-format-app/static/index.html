@@ -440,10 +440,13 @@
     const metricTables = document.getElementById("metricTables");
     const metricKinds = document.getElementById("metricKinds");
     const PASSWORD_KEY = "word_format_app_password";
+    const RETRY_DELAY_MS = 9000;
 
     let selectedFile = null;
     let savedPassword = localStorage.getItem(PASSWORD_KEY) || "";
     passwordInput.value = savedPassword;
+
+    const sleep = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
 
     const setFile = (file) => {
       if (!file) {
@@ -469,6 +472,20 @@
     const getAuthHeaders = () => {
       const password = (passwordInput.value || savedPassword || "").trim();
       return password ? { "x-app-password": password } : {};
+    };
+
+    const warmUpBackend = async () => {
+      if (!API_BASE_URL) return;
+
+      try {
+        await fetch(apiUrl("/"), {
+          method: "GET",
+          headers: getAuthHeaders(),
+          cache: "no-store",
+        });
+      } catch (error) {
+        throw new Error("后端正在唤醒中，请稍等 10 秒后重试。");
+      }
     };
 
     savePasswordBtn.addEventListener("click", () => {
@@ -614,17 +631,32 @@
       if (!selectedFile) return;
 
       submitBtn.disabled = true;
-      statusText.textContent = "正在整理格式并生成报告...";
+      statusText.textContent = "正在连接后端服务...";
 
       const formData = new FormData();
       formData.append("file", selectedFile);
 
       try {
-        const response = await fetch(apiUrl("/api/format"), {
-          method: "POST",
-          body: formData,
-          headers: getAuthHeaders(),
-        });
+        await warmUpBackend();
+        statusText.textContent = "正在整理格式并生成报告...";
+
+        let response;
+        try {
+          response = await fetch(apiUrl("/api/format"), {
+            method: "POST",
+            body: formData,
+            headers: getAuthHeaders(),
+          });
+        } catch (error) {
+          statusText.textContent = "后端可能仍在冷启动，正在自动重试...";
+          await sleep(RETRY_DELAY_MS);
+          response = await fetch(apiUrl("/api/format"), {
+            method: "POST",
+            body: formData,
+            headers: getAuthHeaders(),
+          });
+        }
+
         const payload = await response.json().catch(() => ({}));
         if (!response.ok) {
           throw new Error(payload.detail || "格式整理失败");
