@@ -208,6 +208,7 @@ def _is_body_following_paragraph(text: str) -> bool:
         and not DOC_NO_RE.match(text)
         and not DATE_RE.match(text)
         and not text.endswith(("：", ":"))
+        and text.endswith(("。", "！", "？", "；"))
     )
 
 
@@ -616,6 +617,7 @@ def _detect_title_indices(paragraphs: list[Paragraph]) -> set[int]:
             and not re.search(r"[。；，：:]", text)
             and not re.fullmatch(rf"[{ZH_CHAR_RE}·]{{2,8}}", text)
             and not DATE_RE.match(text)
+            and not LEVEL1_RE.match(text)
         ):
             title_indices.add(idx)
 
@@ -654,6 +656,7 @@ def _detect_author_indices(paragraphs: list[Paragraph], title_indices: set[int])
 
 
 def _is_salutation_text(text: str) -> bool:
+    excluded_keywords = ("要求", "流程", "说明", "事项", "如下", "原则", "标准", "条件")
     return bool(
         text.endswith(("：", ":"))
         and len(text) <= 24
@@ -662,6 +665,7 @@ def _is_salutation_text(text: str) -> bool:
         and not LEVEL2_RE.match(text)
         and not LEVEL3_RE.match(text)
         and not LEVEL4_RE.match(text)
+        and not any(keyword in text for keyword in excluded_keywords)
     )
 
 
