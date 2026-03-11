@@ -33,6 +33,8 @@ LEVEL1_RE = re.compile(r"^[一二三四五六七八九十]+、")
 LEVEL2_RE = re.compile(r"^（[一二三四五六七八九十]+）")
 LEVEL3_RE = re.compile(r"^\d+\.")
 LEVEL4_RE = re.compile(r"^（\d+）")
+OBJECT_ITEM_RE = re.compile(r"^\d+\.\s*对\s*.+?同志$")
+OPINION_RE = re.compile(r"^批评意见[：:]")
 ARABIC_ITEM_RE = re.compile(r"^\s*(\d{1,2})([.．、]?)(\s*.+)?$")
 CN_BRACKET_ITEM_RE = re.compile(r"^\s*[（(]([一二三四五六七八九十]+)[）)](\s*.+)?$")
 DATE_RE = re.compile(r"^\d{4}\s*年\s*\d{1,2}\s*月(?:\s*\d{1,2}\s*日)?$")
@@ -262,6 +264,11 @@ def _normalize_numbered_sequences(doc: DocumentObject) -> None:
         if not text:
             continue
 
+        if _is_pair_material_boundary(text):
+            arabic_counter = None
+            chinese_counter = None
+            continue
+
         if LEVEL1_RE.match(text):
             arabic_counter = None
             chinese_counter = None
@@ -304,6 +311,10 @@ def _is_hard_sequence_boundary(text: str) -> bool:
         or DATE_RE.match(text)
         or text.endswith(("：", ":"))
     )
+
+
+def _is_pair_material_boundary(text: str) -> bool:
+    return bool(OBJECT_ITEM_RE.match(text) or OPINION_RE.match(text))
 
 
 def _has_word_numbering(paragraph: Paragraph) -> bool:
@@ -357,6 +368,9 @@ def _has_following_chinese_bracket_item(paragraphs: list[Paragraph], start_idx: 
 
 
 def _is_arabic_item_candidate(text: str) -> bool:
+    if _is_pair_material_boundary(text):
+        return False
+
     match = ARABIC_ITEM_RE.match(text)
     if not match:
         return False
@@ -483,6 +497,16 @@ def _format_paragraphs(doc: DocumentObject, summary: FormatSummary) -> None:
                 keep_together=True,
             )
             actions.append("按二级标题设置为方正楷体_GBK三号，首行缩进2字")
+        elif kind == "object_item":
+            _apply_paragraph_style(
+                paragraph,
+                BODY_FONT,
+                BODY_SIZE,
+                bold=False,
+                first_line_chars=2,
+                alignment=WD_ALIGN_PARAGRAPH.LEFT,
+            )
+            actions.append("按对象条目设置为方正仿宋_GBK三号，保留原编号")
         elif kind in {"level3", "level4", "attachment"}:
             _apply_paragraph_style(
                 paragraph,
@@ -570,6 +594,8 @@ def _classify_paragraph(
         return "author"
     if index in title_indices:
         return "title"
+    if OBJECT_ITEM_RE.match(text):
+        return "object_item"
     if LEVEL1_RE.match(text):
         return "level1"
     if LEVEL2_RE.match(text):
@@ -618,6 +644,8 @@ def _detect_title_indices(paragraphs: list[Paragraph]) -> set[int]:
             and not re.fullmatch(rf"[{ZH_CHAR_RE}·]{{2,8}}", text)
             and not DATE_RE.match(text)
             and not LEVEL1_RE.match(text)
+            and not OBJECT_ITEM_RE.match(text)
+            and not OPINION_RE.match(text)
         ):
             title_indices.add(idx)
 
@@ -723,6 +751,7 @@ def _apply_paragraph_style(
     keep_together: bool = False,
 ) -> None:
     _normalize_paragraph_spacing(paragraph)
+    _remove_word_numbering(paragraph)
     if alignment is not None:
         paragraph.alignment = alignment
     _clear_paragraph_border(paragraph)
