@@ -242,6 +242,17 @@ def _clean_spacing(text: str) -> str:
     lines = []
     for raw_line in text.splitlines():
         line = raw_line.strip()
+        preserved_name_gaps: list[str] = []
+
+        def keep_name_gap(match: re.Match[str]) -> str:
+            preserved_name_gaps.append(f"{match.group(1)}  {match.group(2)}")
+            return f"__NAME_GAP_{len(preserved_name_gaps) - 1}__"
+
+        line = re.sub(
+            rf"(?<![{ZH_CHAR_RE}])([{ZH_CHAR_RE}])\s{{2,}}([{ZH_CHAR_RE}])(?![{ZH_CHAR_RE}])",
+            keep_name_gap,
+            line,
+        )
         line = re.sub(r"[ \t]{2,}", " ", line)
         line = re.sub(rf"([{ZH_CHAR_RE}])\s+([{ZH_CHAR_RE}])", r"\1\2", line)
         line = re.sub(rf"([{ZH_CHAR_RE}])\s+([，。；：！？、】【（）《》“”‘’])", r"\1\2", line)
@@ -251,6 +262,8 @@ def _clean_spacing(text: str) -> str:
         line = re.sub(r"^(\d+\.)\s+", r"\1", line)
         line = re.sub(r"^(附件[：:])\s+", r"\1", line)
         line = re.sub(r"\s+([：:；，。！？])", r"\1", line)
+        for idx, preserved in enumerate(preserved_name_gaps):
+            line = line.replace(f"__NAME_GAP_{idx}__", preserved)
         lines.append(line)
     return "\n".join(lines)
 
