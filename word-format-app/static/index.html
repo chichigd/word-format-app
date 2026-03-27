@@ -444,29 +444,42 @@
 
     let selectedFile = null;
     let savedPassword = localStorage.getItem(PASSWORD_KEY) || "";
+    let backendReady = !API_BASE_URL;
+    let warmupInFlight = false;
+    let isFormatting = false;
     passwordInput.value = savedPassword;
 
     const sleep = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
 
+    const refreshSubmitState = () => {
+      submitBtn.disabled = !selectedFile || !backendReady || isFormatting;
+      if (isFormatting) {
+        submitBtn.textContent = "整理中...";
+        return;
+      }
+      submitBtn.textContent = backendReady ? "开始整理" : "后端启动中...";
+    };
+
     const setFile = (file) => {
       if (!file) {
         selectedFile = null;
-        submitBtn.disabled = true;
         filePill.style.display = "none";
-        statusText.textContent = "等待选择文件";
+        statusText.textContent = backendReady ? "等待选择文件" : "正在唤醒后端服务，请稍候...";
+        refreshSubmitState();
         return;
       }
 
       if (!file.name.toLowerCase().endsWith(".docx")) {
         statusText.textContent = "只支持 .docx 文件";
+        refreshSubmitState();
         return;
       }
 
       selectedFile = file;
       filePill.textContent = `已选择：${file.name}`;
       filePill.style.display = "block";
-      submitBtn.disabled = false;
-      statusText.textContent = "文件已就绪";
+      statusText.textContent = backendReady ? "文件已就绪" : "文件已选择，正在等待后端启动完成...";
+      refreshSubmitState();
     };
 
     const getAuthHeaders = () => {
@@ -474,18 +487,50 @@
       return password ? { "x-app-password": password } : {};
     };
 
-    const warmUpBackend = async () => {
-      if (!API_BASE_URL) return;
+    const probeBackend = async () => {
+      if (!API_BASE_URL) return true;
 
+      const controller = new AbortController();
+      const timeoutId = setTimeout(() => controller.abort(), 12000);
       try {
-        await fetch(apiUrl("/"), {
+        const response = await fetch(apiUrl("/"), {
           method: "GET",
           headers: getAuthHeaders(),
           cache: "no-store",
+          signal: controller.signal,
         });
-      } catch (error) {
-        throw new Error("后端正在唤醒中，请稍等 10 秒后重试。");
+        return response.ok;
+      } finally {
+        clearTimeout(timeoutId);
       }
+    };
+
+    const warmUpBackend = async () => {
+      if (!API_BASE_URL || backendReady || warmupInFlight) return;
+
+      warmupInFlight = true;
+      refreshSubmitState();
+
+      let attempt = 0;
+      while (!backendReady) {
+        attempt += 1;
+        statusText.textContent = `正在唤醒后端服务（第 ${attempt} 次），预计需要 10 到 20 秒...`;
+        try {
+          const ready = await probeBackend();
+          if (ready) {
+            backendReady = true;
+            statusText.textContent = selectedFile ? "后端已就绪，可以开始整理" : "后端已就绪，等待选择文件";
+            break;
+          }
+        } catch (error) {
+          statusText.textContent = "后端仍在启动中，正在继续连接...";
+        }
+        refreshSubmitState();
+        await sleep(attempt === 1 ? 6000 : RETRY_DELAY_MS);
+      }
+
+      warmupInFlight = false;
+      refreshSubmitState();
     };
 
     savePasswordBtn.addEventListener("click", () => {
@@ -630,7 +675,14 @@
     submitBtn.addEventListener("click", async () => {
       if (!selectedFile) return;
 
-      submitBtn.disabled = true;
+      if (!backendReady) {
+        statusText.textContent = "后端尚未就绪，正在继续连接，请稍候...";
+        warmUpBackend();
+        return;
+      }
+
+      isFormatting = true;
+      refreshSubmitState();
       statusText.textContent = "正在连接后端服务...";
 
       const formData = new FormData();
@@ -671,9 +723,13 @@
       } catch (error) {
         statusText.textContent = error.message || "处理失败";
       } finally {
-        submitBtn.disabled = false;
+        isFormatting = false;
+        refreshSubmitState();
       }
     });
+
+    refreshSubmitState();
+    warmUpBackend();
   </script>
 </body>
 </html>
